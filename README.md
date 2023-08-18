@@ -1,5 +1,5 @@
 # NvQFTswitcher
-App that enables fast refreshrate switching without edid modifications utilizing quick frame transport timings.
+Simple proof of concept app which enables fast refresh rate switching via quick frame transport.
 
 * Nvidia gpu required
 * Suitible for custom fixed refreshrates on vrr capable displays.
@@ -8,3 +8,6 @@ App that enables fast refreshrate switching without edid modifications utilizing
 * Start the app with your monitor at its maximum refresh rate. This will establish the base video timings from which your custom refresh rates will be derived.
 * ALT + SHIFT + R to recover from a bad modeswitch.
 * Basic support for saving frequently used refresh rates per monitor.
+
+
+![alt text](https://i.imgur.com/yyMqeg8.png)
