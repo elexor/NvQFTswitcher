@@ -126,7 +126,7 @@ void ReloadModes(HWND hWnd) {
     {
         if (currentModes[i].refreshrate == dispInfo[disp_idx].desired_refreshrate)
         {
-            index = int(i);
+            index = i;
             break;
         }
     }
