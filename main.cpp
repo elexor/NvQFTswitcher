@@ -31,6 +31,8 @@ HWND hTimingText;
 std::vector<savedMode> modes, currentModes;
 NvAPI_Status ret = NVAPI_OK;
 
+HMONITOR hMonitor;
+
 NvAPI_Status ApplyCustomDisplay();
 void UpdateTimingText();
 
@@ -62,9 +64,8 @@ void Revert()
 void initDisp()
 {
     DISPLAY_DEVICE dd{};
-    DEVMODEW dm{}, cd{};
-
     dd.cb = sizeof(dd);
+
     int deviceIndex = 0;
     while (EnumDisplayDevices(0, deviceIndex, &dd, 0))
     {
@@ -89,11 +90,18 @@ void initDisp()
             }
             dispInfo[deviceIndex].displayString = displayString;
             dispInfo[deviceIndex].dispId = displayId;
+
+            std::wstring wideDeviceName(displayName.begin(), displayName.end());
+            LPCWSTR szDeviceName = wideDeviceName.c_str();
+
+            ChangeDisplaySettingsEx(szDeviceName, NULL, NULL, CDS_ENABLE_UNSAFE_MODES, NULL); // some modes won't work without this. it's the same as "Enable resolutions not exposed by the display" in nvcp
             ++monitorIndex;
         }
         ++deviceIndex;
     }
 }
+
+
 
 void ResizeComboBox(HWND hComboBox, int numElements) {
     RECT rect;
@@ -480,6 +488,8 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+
+    hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
 
     LONG_PTR dwStyle = GetWindowLongPtr(hwnd, GWL_STYLE);
     dwStyle &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
