@@ -4,10 +4,14 @@
 
 #include <windows.h>
 #include <windowsx.h>
+#include <string.h>
+#include <filesystem>
+#include <iostream>
 #include <stdexcept>
+
 #include "nvapi.h"
 #include "config.h"
-#include <filesystem>
+
 
 #pragma comment(lib, "nvapi64.lib")
 
@@ -23,9 +27,12 @@
 int disp_idx;
 bool quit;
 savedMode mode;
+HWND hTimingText;
 std::vector<savedMode> modes, currentModes;
 NvAPI_Status ret = NVAPI_OK;
+
 NvAPI_Status ApplyCustomDisplay();
+void UpdateTimingText();
 
 
 struct displayInfo
@@ -130,6 +137,7 @@ void ReloadModes(HWND hWnd) {
             break;
         }
     }
+    UpdateTimingText();
     ResizeComboBox(hwndCombo, currentModes.size());
     SendMessage(hwndCombo, CB_SETCURSEL, index, 0);
 }
@@ -207,6 +215,50 @@ void SetBaseMode()
     delete display;
 }
 
+void UpdateTimingText()
+{
+    // get current mode timings and generate informational string
+
+    std::string modeString{};
+    NV_CUSTOM_DISPLAY* display = new NV_CUSTOM_DISPLAY{};
+    NV_TIMING_INPUT timing = { 0 };
+    timing.version = NV_TIMING_INPUT_VER;
+
+    ret = NvAPI_DISP_GetTiming(dispInfo[disp_idx].dispId, &timing, &display[0].timing);
+    if (ret != NVAPI_OK)
+    {
+        MessageBox(NULL, L"NvAPI_DISP_GetTiming() failed = ", L"Error", MB_OK | MB_ICONERROR);
+        delete display;
+        return;
+    }
+
+    auto h_polarity = (display[0].timing.HSyncPol == 1) ? "+" : "-";
+    auto v_polarity = (display[0].timing.VSyncPol == 1) ? "+" : "-";
+    auto scantype =   (display[0].timing.interlaced == 1) ? "i" : "p";
+
+    auto mode =         std::format("{}x{}@{:.3f}hz ",  display[0].timing.HVisible, display[0].timing.VVisible, static_cast<double>(display[0].timing.etc.rrx1k) / 1000);
+    auto v_frontporch = std::format("vfp {} ",          display[0].timing.VFrontPorch);
+    auto h_frontporch = std::format("hfp {} ",          display[0].timing.HFrontPorch);
+    auto h_syncwidth =  std::format("{} hs {} ",        h_polarity, display[0].timing.HSyncWidth);
+    auto v_syncwidth =  std::format("{} vs {} ",        v_polarity, display[0].timing.VSyncWidth);
+    auto h_backporch =  std::format("hbp {} ",          display[0].timing.HTotal - display[0].timing.HVisible - display[0].timing.HFrontPorch - display[0].timing.HSyncWidth);
+    auto v_backporch =  std::format("vbp {} ",          display[0].timing.VTotal - display[0].timing.VVisible - display[0].timing.VFrontPorch - display[0].timing.VSyncWidth);
+    auto h_total =      std::format("ht {} ",           display[0].timing.HTotal);
+    auto v_total =      std::format("vt {} ",           display[0].timing.VTotal);
+    auto h_frequency =  std::format("hfreq {:.3f}khz ", static_cast<double>(display[0].timing.pclk * 10) / display[0].timing.HTotal); 
+    auto pixelclock =   std::format("pclk {:.3f}mhz ",  static_cast<double>(display[0].timing.pclk) / 100);
+
+    modeString =
+        mode + "\n" +
+        h_frequency + pixelclock + "\n" +
+        h_frontporch + h_syncwidth + h_backporch + h_total + "\n" +
+        v_frontporch + v_syncwidth + v_backporch + v_total + "\n";
+        
+    SetWindowTextA(hTimingText, modeString.c_str());
+    delete display;
+    return;
+}
+
 baseMode GetBaseMode()
 {
     baseMode basemode = load_baseMode(dispInfo[disp_idx].dispId);
@@ -216,6 +268,7 @@ baseMode GetBaseMode()
 
 NvAPI_Status ApplyCustomDisplay()
 {
+
     NV_CUSTOM_DISPLAY* display = new NV_CUSTOM_DISPLAY{};
 
     NV_TIMING_FLAG flag = { 0 };
@@ -304,6 +357,8 @@ NvAPI_Status ApplyCustomDisplay()
 
     dispInfo[disp_idx].oldpclk = display[0].timing.pclk;
     delete display;
+
+    UpdateTimingText();
     return ret;
 }
 
@@ -419,7 +474,7 @@ int APIENTRY WinMain(
         lpszClassName,
         lpszWindowName,
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 300, 140,
+        CW_USEDEFAULT, CW_USEDEFAULT, 300, 210,
         NULL,
         NULL,
         hInst,
@@ -430,12 +485,19 @@ int APIENTRY WinMain(
     dwStyle &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
     SetWindowLongPtr(hwnd, GWL_STYLE, dwStyle);
 
+    // Initialize font
+    HDC hDC = GetDC(hwnd);
+    int nHeight = -MulDiv(11, GetDeviceCaps(hDC, LOGPIXELSY), 82);
+    HFONT hFont = CreateFont(nHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    ReleaseDC(hwnd, hDC);
 
     if (hwnd == NULL)
     {
         MessageBox(NULL, L"Window Creation Failed!", L"Error!", MB_ICONEXCLAMATION | MB_OK);
         return 0;
     }
+
     ShowWindow(hwnd, cmdshow);
 
     RegisterHotKey(hwnd, 1, MOD_ALT | MOD_SHIFT, 'R'); // use this combo to recover from a bad modeswitch
@@ -455,6 +517,7 @@ int APIENTRY WinMain(
         }
 
     }
+    SendMessage(hDisplayComboBox, WM_SETFONT, (LPARAM)hFont, TRUE);
     ResizeComboBox(hDisplayComboBox, sizeof(dispInfo));
     SendMessage(hDisplayComboBox, CB_SETCURSEL, 0, 0);
 
@@ -468,6 +531,7 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hChangeRefreshrateButton, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     HWND hdesiredResolutionTextBox = CreateWindowEx(
         WS_EX_CLIENTEDGE,
@@ -480,6 +544,7 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hdesiredResolutionTextBox, WM_SETFONT, (LPARAM)hFont, TRUE);
     SetWindowText(hdesiredResolutionTextBox, L"60.000");
 
     HWND hSaveRefreshrateButton = CreateWindow(
@@ -492,6 +557,7 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hSaveRefreshrateButton, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     HWND hDeleteRefreshrateButton = CreateWindow(
         L"BUTTON",
@@ -503,21 +569,23 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hDeleteRefreshrateButton, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     HWND hModesComboBox = CreateWindowEx(0, L"COMBOBOX", L"Collapsed Combobox",
         CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_CHILD | WS_OVERLAPPED | WS_VISIBLE,
         0, 75, 285, 0, hwnd, (HMENU)saved_modes_combo, (HINSTANCE)GetWindowLong(hwnd, GWLP_HINSTANCE), NULL);
+    SendMessage(hModesComboBox, WM_SETFONT, (LPARAM)hFont, TRUE);
 
-
-    HWND hBaseModeText = CreateWindowW(
-        L"STATIC",                      
-        L"",                            
+    hTimingText = CreateWindowA(
+        "STATIC",                      
+        "test",
         WS_VISIBLE | WS_CHILD,        
-        0, 110, 300, 20,               
+        1, 100, 300, 140,               
         hwnd,                     
         (HMENU)base_mode_text,            
         hInst,                  
-        NULL);                     
+        NULL);
+    SendMessage(hTimingText, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     ReloadModes(hwnd);
 
