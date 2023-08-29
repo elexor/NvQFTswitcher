@@ -23,7 +23,7 @@
 #define saved_modes_combo 1005
 #define delete_refreshrate_btn 1006
 #define base_mode_text 1007
-#define test 0x2F
+#define popup_exit 10000
 
 
 HMENU popmenu;
@@ -164,6 +164,8 @@ void ReloadModes(HWND hWnd) {
             modesCount++;
         }
     }
+    AppendMenu(popmenu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(popmenu, MF_STRING, popup_exit, "Exit");
     int index = 0;
     for (size_t i = 0; i < currentModes.size(); i++)
     {
@@ -446,6 +448,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 SetForegroundWindow(hwnd);
                 int clicked_mode_idx = TrackPopupMenu(popmenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
                 SendMessage(hwnd, WM_NULL, 0, 0);
+                if (clicked_mode_idx == popup_exit)
+                {
+                    SendMessage(hwnd, WM_DESTROY, 0, 0);
+                }
                 if (clicked_mode_idx > 0 && clicked_mode_idx <= currentModes.size())
                 {
                     dispInfo[disp_idx].selected_mode_idx = clicked_mode_idx - 1;
@@ -586,7 +592,6 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
-
 
     LONG_PTR dwStyle = GetWindowLongPtr(hwnd, GWL_STYLE);
     dwStyle &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
