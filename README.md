@@ -10,5 +10,4 @@ Simple proof of concept app which enables fast refresh rate switching via quick 
 * Basic support for saving frequently used refresh rates per monitor.
 
 
-![Screenshot](screenshot.png)
-
+![alt text](https://i.imgur.com/yyMqeg8.png)
