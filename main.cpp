@@ -25,6 +25,12 @@
 #define base_mode_text 1007
 #define popup_exit 10000
 
+//todo
+// bugs
+// when starting from scratch:
+// empty refreshrate combobox doesn't appear
+// empty popup menu shouldn't show divider
+// saving a new refreshrate causes that new refreshrate to be ticked in the popup menu
 
 HMENU popmenu;
 
@@ -123,8 +129,10 @@ bool CompareModes(const savedMode& a, const savedMode& b)
 
 
 void ReloadModes(HWND hWnd) {
+
+    static bool first_run = true;
+
     HWND hwndCombo = GetDlgItem(hWnd, saved_modes_combo);
-    SendMessage(hwndCombo, CB_RESETCONTENT, 0, 0);
     modes.clear();
     currentModes.clear();
     modes = loadModes();
@@ -136,36 +144,36 @@ void ReloadModes(HWND hWnd) {
     popmenu = CreatePopupMenu();
 
     int modesCount = 0;
-
     std::sort(modes.begin(), modes.end(), CompareModes);
+    SendMessage(hwndCombo, CB_RESETCONTENT, 0, 0);
 
-    for (size_t i = 0; i < modes.size(); i++)
-    {
-        if (modes[i].dispId == dispInfo[disp_idx].dispId && modes[i].refreshrate > 0) {
-
-            auto rr = std::format("{:.3f}hz", modes[i].refreshrate);
-
-            // populate combobox with modes
-            SendMessageA(hwndCombo, CB_ADDSTRING, 0, (LPARAM)rr.c_str());
-
-            // populate popup menu with modes
-
-            if (dispInfo[disp_idx].selected_mode_idx == modesCount)
-            {
-                AppendMenuA(popmenu, MF_STRING | MF_CHECKED, modesCount + 1, rr.c_str());
-            }
-            else
-            {
-                AppendMenuA(popmenu, MF_STRING, modesCount + 1, rr.c_str());
-            }
-            
-
-            currentModes.push_back({ modes[i].dispId, modes[i].refreshrate });
-            modesCount++;
-        }
+    if (modes.empty())
+    { 
+        SendMessage(hwndCombo, CB_ADDSTRING, 0, (LPARAM)L"No refreshrates saved"); 
     }
-    AppendMenu(popmenu, MF_SEPARATOR, 0, NULL);
+    else 
+    {
+        for (size_t i = 0; i < modes.size(); i++)
+        {
+            if (modes[i].dispId == dispInfo[disp_idx].dispId && modes[i].refreshrate > 0) {
+
+                auto rr = std::format("{:.3f}hz", modes[i].refreshrate);
+
+                // populate combobox with modes
+                SendMessageA(hwndCombo, CB_ADDSTRING, 0, (LPARAM)rr.c_str());
+
+                // populate popup menu with modes
+                AppendMenuA(popmenu, MF_STRING, modesCount + 1, rr.c_str());
+
+                currentModes.push_back({ modes[i].dispId, modes[i].refreshrate });
+                modesCount++;
+            }
+        }
+        AppendMenu(popmenu, MF_SEPARATOR, 0, NULL);
+        ResizeComboBox(hwndCombo, currentModes.size());
+    }
     AppendMenuA(popmenu, MF_STRING, popup_exit, "Exit");
+
     int index = 0;
     for (size_t i = 0; i < currentModes.size(); i++)
     {
@@ -176,9 +184,14 @@ void ReloadModes(HWND hWnd) {
         }
     }
     UpdateTimingText();
-    ResizeComboBox(hwndCombo, currentModes.size());
-    SendMessage(hwndCombo, CB_SETCURSEL, index, 0);
+
+    if (dispInfo[disp_idx].desired_refreshrate == -1 || first_run == true)
+    {
+        first_run = false;
+        return;
+    }
     CheckMenuItem(popmenu, index + 1, MF_BYCOMMAND | MF_CHECKED);
+    SendMessage(hwndCombo, CB_SETCURSEL, index, 0);
 }
 
 void OnComboBoxSelectionChanged(HWND hWnd)
@@ -210,6 +223,7 @@ void ChangeRefreshrate(HWND hWnd)
     dispInfo[disp_idx].selected_mode_idx = -1;
     delete[] buffer;
     ApplyCustomDisplay();
+    ReloadModes(hWnd);
 }
 
 void SaveRefreshrate(HWND hWnd)
@@ -218,9 +232,9 @@ void SaveRefreshrate(HWND hWnd)
     int textLength = GetWindowTextLength(hwndTextbox);
     TCHAR* buffer = new TCHAR[textLength + 1];
     GetWindowText(hwndTextbox, buffer, textLength + 1);
-    dispInfo[disp_idx].desired_refreshrate = wcstof(buffer, NULL);
+
+    mode = { dispInfo[disp_idx].dispId, wcstof(buffer, NULL) };
     delete[] buffer;
-    mode = { dispInfo[disp_idx].dispId, dispInfo[disp_idx].desired_refreshrate };
     saveMode(mode);
     ReloadModes(hWnd);
 }
@@ -229,6 +243,7 @@ void DeleteRefreshrate(HWND hWnd)
 {
     savedMode selectedMode = { dispInfo[disp_idx].dispId, dispInfo[disp_idx].desired_refreshrate };
     deleteMode(selectedMode);
+    dispInfo[disp_idx].desired_refreshrate = -1;
     ReloadModes(hWnd);
 }
 
@@ -614,8 +629,6 @@ int APIENTRY WinMain(
     int height = GetSystemMetrics(SM_CYSCREEN);
 
     SetWindowPos(hwnd, HWND_TOP, width - 300, height - 300, 300, 210, SWP_NOZORDER);
-
-    //ShowWindow(hwnd, cmdshow);
 
     RegisterHotKey(hwnd, 1, MOD_ALT | MOD_SHIFT, 'R'); // use this combo to recover from a bad modeswitch
 
