@@ -615,7 +615,7 @@ int APIENTRY WinMain(
 
     SetWindowPos(hwnd, HWND_TOP, width - 300, height - 300, 300, 210, SWP_NOZORDER);
 
-    ShowWindow(hwnd, cmdshow);
+    //ShowWindow(hwnd, cmdshow);
 
     RegisterHotKey(hwnd, 1, MOD_ALT | MOD_SHIFT, 'R'); // use this combo to recover from a bad modeswitch
 
