@@ -15,6 +15,10 @@
 
 #define WM_SYSICON (WM_USER + 1)
 #define ID_TRAY_APP_ICON 1
+#pragma comment(lib, "nvapi64.lib")
+
+#define WM_SYSICON (WM_USER + 1)
+#define ID_TRAY_APP_ICON 1
 #define select_display_combo 1001
 #define change_refreshrate_btn 1002
 #define desired_refreshrate_textbox 1003
@@ -23,6 +27,8 @@
 #define delete_refreshrate_btn 1006
 #define base_mode_text 1007
 #define popup_exit 10000
+
+HMENU popmenu;
 
 HMENU popmenu;
 
@@ -214,6 +220,7 @@ void ChangeRefreshrate(HWND hWnd)
     TCHAR* buffer = new TCHAR[textLength + 1];
     GetWindowText(hwndTextbox, buffer, textLength + 1);
     dispInfo[disp_idx].desired_refreshrate = wcstof(buffer, NULL);
+    dispInfo[disp_idx].selected_mode_idx = -1;
     delete[] buffer;
     ApplyCustomDisplay();
     dispInfo[disp_idx].desired_refreshrate = -1;
@@ -265,6 +272,23 @@ void SetBaseMode()
     save_baseMode({ dispInfo[disp_idx].dispId, display[0].timing.pclk, display[0].timing.etc.rr, display[0].timing.VTotal });
     delete display;
 }
+
+void UpdateTimingText()
+{
+    // get current mode timings and generate informational string
+
+    std::string modeString{};
+    NV_CUSTOM_DISPLAY* display = new NV_CUSTOM_DISPLAY{};
+    NV_TIMING_INPUT timing = { 0 };
+    timing.version = NV_TIMING_INPUT_VER;
+
+    ret = NvAPI_DISP_GetTiming(dispInfo[disp_idx].dispId, &timing, &display[0].timing);
+    if (ret != NVAPI_OK)
+    {
+        MessageBox(NULL, L"NvAPI_DISP_GetTiming() failed = ", L"Error", MB_OK | MB_ICONERROR);
+        delete display;
+        return;
+    }
 
 void UpdateTimingText()
 {
@@ -420,6 +444,13 @@ NvAPI_Status ApplyCustomDisplay()
     UpdateTimingText();
 
     delete display;
+
+    UpdateTimingText();
+
+    if (dispInfo[disp_idx].is_xg2431) {
+        // todo
+    }
+
     return ret;
 }
 
