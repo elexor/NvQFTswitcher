@@ -132,7 +132,6 @@ bool tuneXG2431(PHYSICAL_MONITOR monitor, double refreshrate)
         return 0;
     }
     return 1;
-    return -1;
 }
 
 
