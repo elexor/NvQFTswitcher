@@ -4,7 +4,7 @@
 
 #include <vector>
 #include <string>
-#include "nvapi.h"
+#include "nvapi\nvapi.h"
 
 struct savedMode
 {
@@ -18,6 +18,25 @@ struct baseMode
     NvU32 maxpclk = 0;
     int refreshrate = 0;
     int minvt = 0;
+};
+
+struct displayInfo
+{
+    baseMode basemode;
+    std::wstring displayString;
+    NvU32 dispId = 0;
+    bool initDisplaymode = true;
+    int minVtotal = 0;
+    int maxVtotal = 55000;
+    NvU32 maxpclk = 0;
+    int reducemaxpclk = 0;
+    int oldpclk = 0;
+    int maxRefreshrate = 0;
+    int selected_mode_idx = -1;
+    double desired_refreshrate;
+    bool round_pixel_clock = false;
+    bool spoof_refreshrate = false;
+    bool is_xg2431 = false;
 };
 
 std::vector<savedMode> loadModes();

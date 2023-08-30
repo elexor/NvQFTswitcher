@@ -1,16 +1,20 @@
-
-
-#define WIN32_LEAN_AND_MEAN
-
 #include <windows.h>
 #include <windowsx.h>
-#include <stdexcept>
-#include "nvapi.h"
-#include "config.h"
+#include <string.h>
 #include <filesystem>
+#include <iostream>
+#include <stdexcept>
+#include <regex>
+#include <PhysicalMonitorEnumerationAPI.h>
+#include <LowLevelMonitorConfigurationAPI.h>
 
-#pragma comment(lib, "nvapi64.lib")
+#include "nvapi\nvapi.h"
+#include "config.h"
+#include "xg2431.h"
+#include "resource.h"
 
+#define WM_SYSICON (WM_USER + 1)
+#define ID_TRAY_APP_ICON 1
 #define select_display_combo 1001
 #define change_refreshrate_btn 1002
 #define desired_refreshrate_textbox 1003
@@ -18,46 +22,46 @@
 #define saved_modes_combo 1005
 #define delete_refreshrate_btn 1006
 #define base_mode_text 1007
+#define popup_exit 10000
 
+HMENU popmenu;
 
 int disp_idx;
 bool quit;
 savedMode mode;
-std::vector<savedMode> modes, currentModes;
+HWND hTimingText;
 NvAPI_Status ret = NVAPI_OK;
+
+std::vector<savedMode> modes, currentModes;
+std::vector<PHYSICAL_MONITOR> physicalMonitors {};
+displayInfo dispInfo[NVAPI_MAX_DISPLAYS] {};
+
+
 NvAPI_Status ApplyCustomDisplay();
-
-
-struct displayInfo
-{
-    baseMode basemode;
-    std::wstring displayString;
-    NvU32 dispId = 0;
-    bool initDisplaymode = true;
-    int minVtotal = 0;
-    int maxVtotal = 55000;
-    NvU32 maxpclk = 0;
-    int reducemaxpclk = 0;
-    int oldpclk = 0;
-    int maxRefreshrate = 0;
-    double desired_refreshrate;
-    bool round_pixel_clock = false;
-    bool spoof_refreshrate = false;
-};
-
-displayInfo dispInfo[NVAPI_MAX_DISPLAYS]{};
+void UpdateTimingText();
 
 void Revert()
 {
     ret = NvAPI_DISP_RevertCustomDisplayTrial(&dispInfo[disp_idx].dispId, 1);
 }
 
+BOOL CALLBACK monitorEnumProcCallback(HMONITOR hMonitor, HDC hDeviceContext, LPRECT rect, LPARAM data)
+{
+    DWORD numberOfPhysicalMonitors;
+    BOOL success = GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, &numberOfPhysicalMonitors);
+    if (success) {
+        auto originalSize = physicalMonitors.size();
+        physicalMonitors.resize(physicalMonitors.size() + numberOfPhysicalMonitors);
+        success = GetPhysicalMonitorsFromHMONITOR(hMonitor, numberOfPhysicalMonitors, physicalMonitors.data() + originalSize);
+    }
+    return true;
+}
+
 void initDisp()
 {
     DISPLAY_DEVICE dd{};
-    DEVMODEW dm{}, cd{};
-
     dd.cb = sizeof(dd);
+
     int deviceIndex = 0;
     while (EnumDisplayDevices(0, deviceIndex, &dd, 0))
     {
@@ -82,11 +86,23 @@ void initDisp()
             }
             dispInfo[deviceIndex].displayString = displayString;
             dispInfo[deviceIndex].dispId = displayId;
+
+            if (std::regex_match(displayString, std::wregex(L"VSC3B3[0-F]"))) // check for active xg2431
+            {
+                dispInfo[deviceIndex].is_xg2431 = true;
+            }
+
+            std::wstring wideDeviceName(displayName.begin(), displayName.end());
+            LPCWSTR szDeviceName = wideDeviceName.c_str();
+
+            ChangeDisplaySettingsEx(szDeviceName, NULL, NULL, CDS_ENABLE_UNSAFE_MODES, NULL); // some modes won't work without this. it's the same as "Enable resolutions not exposed by the display" in nvcp
             ++monitorIndex;
         }
         ++deviceIndex;
     }
+    EnumDisplayMonitors(NULL, NULL, &monitorEnumProcCallback, 0);
 }
+
 
 void ResizeComboBox(HWND hComboBox, int numElements) {
     RECT rect;
@@ -103,24 +119,53 @@ bool CompareModes(const savedMode& a, const savedMode& b)
     return a.refreshrate < b.refreshrate;
 }
 
+
 void ReloadModes(HWND hWnd) {
+
+    static bool first_run = true;
+
     HWND hwndCombo = GetDlgItem(hWnd, saved_modes_combo);
-    SendMessage(hwndCombo, CB_RESETCONTENT, 0, 0);
     modes.clear();
     currentModes.clear();
     modes = loadModes();
-    int modesCount = 0;
 
-    std::sort(modes.begin(), modes.end(), CompareModes);
-
-    for (size_t i = 0; i < modes.size(); i++)
-    {
-        if (modes[i].dispId == dispInfo[disp_idx].dispId && modes[i].refreshrate > 0) {
-            SendMessage(hwndCombo, CB_ADDSTRING, 0, (LPARAM)std::to_wstring(modes[i].refreshrate).c_str());
-            currentModes.push_back({ modes[i].dispId, modes[i].refreshrate });
-            modesCount++;
-        }
+    if (IsMenu(popmenu)) {
+        DestroyMenu(popmenu);
+        popmenu = NULL;
     }
+    popmenu = CreatePopupMenu();
+
+    int modesCount = 0;
+    std::sort(modes.begin(), modes.end(), CompareModes);
+    SendMessage(hwndCombo, CB_RESETCONTENT, 0, 0);
+
+    if (modes.empty())
+    { 
+        SendMessage(hwndCombo, CB_ADDSTRING, 0, (LPARAM)L"No refreshrates saved"); 
+    }
+    else 
+    {
+        for (size_t i = 0; i < modes.size(); i++)
+        {
+            if (modes[i].dispId == dispInfo[disp_idx].dispId && modes[i].refreshrate > 0) {
+
+                auto rr = std::format("{:.3f}hz", modes[i].refreshrate);
+
+                // populate combobox with modes
+                SendMessageA(hwndCombo, CB_ADDSTRING, 0, (LPARAM)rr.c_str());
+
+                // populate popup menu with modes
+                AppendMenuA(popmenu, MF_STRING, modesCount + 1, rr.c_str());
+
+                currentModes.push_back({ modes[i].dispId, modes[i].refreshrate });
+                modesCount++;
+            }
+        }
+        AppendMenu(popmenu, MF_SEPARATOR, 0, NULL);
+        ResizeComboBox(hwndCombo, currentModes.size());
+    }
+    AppendMenuA(popmenu, MF_STRING, popup_exit, "Exit");
+
     int index = 0;
     for (size_t i = 0; i < currentModes.size(); i++)
     {
@@ -130,8 +175,17 @@ void ReloadModes(HWND hWnd) {
             break;
         }
     }
-    ResizeComboBox(hwndCombo, currentModes.size());
-    SendMessage(hwndCombo, CB_SETCURSEL, index, 0);
+    UpdateTimingText();
+
+    if (dispInfo[disp_idx].desired_refreshrate == -1 || first_run == true)
+    {
+        first_run = false;
+    }
+    else 
+    {
+        CheckMenuItem(popmenu, index + 1, MF_BYCOMMAND | MF_CHECKED);
+        SendMessage(hwndCombo, CB_SETCURSEL, index, 0);
+    }
 }
 
 void OnComboBoxSelectionChanged(HWND hWnd)
@@ -148,8 +202,9 @@ void OnSavedModesSelected(HWND hWnd)
 {
     HWND hSavedModesComboBox = GetDlgItem(hWnd, saved_modes_combo);
     int index = SendMessage(hSavedModesComboBox, CB_GETCURSEL, 0, 0);
-    dispInfo[disp_idx].desired_refreshrate = currentModes[index].refreshrate;
+    dispInfo[disp_idx].selected_mode_idx = index;
     ApplyCustomDisplay();
+    ReloadModes(hWnd);
 }
 
 void ChangeRefreshrate(HWND hWnd)
@@ -161,6 +216,8 @@ void ChangeRefreshrate(HWND hWnd)
     dispInfo[disp_idx].desired_refreshrate = wcstof(buffer, NULL);
     delete[] buffer;
     ApplyCustomDisplay();
+    dispInfo[disp_idx].desired_refreshrate = -1;
+    ReloadModes(hWnd);
 }
 
 void SaveRefreshrate(HWND hWnd)
@@ -169,9 +226,10 @@ void SaveRefreshrate(HWND hWnd)
     int textLength = GetWindowTextLength(hwndTextbox);
     TCHAR* buffer = new TCHAR[textLength + 1];
     GetWindowText(hwndTextbox, buffer, textLength + 1);
-    dispInfo[disp_idx].desired_refreshrate = wcstof(buffer, NULL);
+    dispInfo[disp_idx].desired_refreshrate = -1;
+    mode = { dispInfo[disp_idx].dispId, wcstof(buffer, NULL) };
+    
     delete[] buffer;
-    mode = { dispInfo[disp_idx].dispId, dispInfo[disp_idx].desired_refreshrate };
     saveMode(mode);
     ReloadModes(hWnd);
 }
@@ -180,6 +238,7 @@ void DeleteRefreshrate(HWND hWnd)
 {
     savedMode selectedMode = { dispInfo[disp_idx].dispId, dispInfo[disp_idx].desired_refreshrate };
     deleteMode(selectedMode);
+    dispInfo[disp_idx].desired_refreshrate = -1;
     ReloadModes(hWnd);
 }
 
@@ -207,6 +266,50 @@ void SetBaseMode()
     delete display;
 }
 
+void UpdateTimingText()
+{
+    // get current mode timings and generate informational string
+
+    std::string modeString{};
+    NV_CUSTOM_DISPLAY* display = new NV_CUSTOM_DISPLAY{};
+    NV_TIMING_INPUT timing = { 0 };
+    timing.version = NV_TIMING_INPUT_VER;
+
+    ret = NvAPI_DISP_GetTiming(dispInfo[disp_idx].dispId, &timing, &display[0].timing);
+    if (ret != NVAPI_OK)
+    {
+        MessageBox(NULL, L"NvAPI_DISP_GetTiming() failed = ", L"Error", MB_OK | MB_ICONERROR);
+        delete display;
+        return;
+    }
+
+    auto h_polarity = (display[0].timing.HSyncPol == 1) ? "+" : "-";
+    auto v_polarity = (display[0].timing.VSyncPol == 1) ? "+" : "-";
+    auto scantype =   (display[0].timing.interlaced == 1) ? "i" : "p";
+
+    auto mode =         std::format("{}x{}@{:.3f}hz ",  display[0].timing.HVisible, display[0].timing.VVisible, static_cast<double>(display[0].timing.etc.rrx1k) / 1000);
+    auto v_frontporch = std::format("vfp {} ",          display[0].timing.VFrontPorch);
+    auto h_frontporch = std::format("hfp {} ",          display[0].timing.HFrontPorch);
+    auto h_syncwidth =  std::format("{} hs {} ",        h_polarity, display[0].timing.HSyncWidth);
+    auto v_syncwidth =  std::format("{} vs {} ",        v_polarity, display[0].timing.VSyncWidth);
+    auto h_backporch =  std::format("hbp {} ",          display[0].timing.HTotal - display[0].timing.HVisible - display[0].timing.HFrontPorch - display[0].timing.HSyncWidth);
+    auto v_backporch =  std::format("vbp {} ",          display[0].timing.VTotal - display[0].timing.VVisible - display[0].timing.VFrontPorch - display[0].timing.VSyncWidth);
+    auto h_total =      std::format("ht {} ",           display[0].timing.HTotal);
+    auto v_total =      std::format("vt {} ",           display[0].timing.VTotal);
+    auto h_frequency =  std::format("hfreq {:.3f}khz ", static_cast<double>(display[0].timing.pclk * 10) / display[0].timing.HTotal); 
+    auto pixelclock =   std::format("pclk {:.3f}mhz ",  static_cast<double>(display[0].timing.pclk) / 100);
+
+    modeString =
+        mode + "\n" +
+        h_frequency + pixelclock + "\n" +
+        h_frontporch + h_syncwidth + h_backporch + h_total + "\n" +
+        v_frontporch + v_syncwidth + v_backporch + v_total + "\n";
+        
+    SetWindowTextA(hTimingText, modeString.c_str());
+    delete display;
+    return;
+}
+
 baseMode GetBaseMode()
 {
     baseMode basemode = load_baseMode(dispInfo[disp_idx].dispId);
@@ -216,6 +319,15 @@ baseMode GetBaseMode()
 
 NvAPI_Status ApplyCustomDisplay()
 {
+    if (dispInfo[disp_idx].selected_mode_idx >= 0)
+    {
+        dispInfo[disp_idx].desired_refreshrate = currentModes[dispInfo[disp_idx].selected_mode_idx].refreshrate;
+    }
+
+    if (dispInfo[disp_idx].is_xg2431) {
+        tuneXG2431(physicalMonitors[disp_idx], dispInfo[disp_idx].desired_refreshrate);
+    }
+
     NV_CUSTOM_DISPLAY* display = new NV_CUSTOM_DISPLAY{};
 
     NV_TIMING_FLAG flag = { 0 };
@@ -303,11 +415,22 @@ NvAPI_Status ApplyCustomDisplay()
     SetCursorPos(mousepos.x, mousepos.y);
 
     dispInfo[disp_idx].oldpclk = display[0].timing.pclk;
+
+
+    UpdateTimingText();
+
     delete display;
     return ret;
 }
 
+void minimizeToTray(HWND hwnd) {
+    ShowWindow(hwnd, SW_HIDE);
+}
 
+void restoreFromTray(HWND hwnd) {
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
+}
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -315,12 +438,68 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg)
     {
+    case WM_CREATE: {
+        HINSTANCE hInstance = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
+        NOTIFYICONDATA nid = { sizeof(nid) };
+        nid.hWnd = hwnd;
+        nid.uID = ID_TRAY_APP_ICON;
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_SYSICON; 
+        nid.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON1));
+        lstrcpy(nid.szTip, TEXT("NvQFTswitcher"));
+        Shell_NotifyIcon(NIM_ADD, &nid);
+        break;
+    }
+    case WM_SYSICON: {
+        switch (lParam) {
+            case WM_RBUTTONUP:
+            {
+                POINT pt;
+                GetCursorPos(&pt);
+                SetForegroundWindow(hwnd);
+                int clicked_mode_idx = TrackPopupMenu(popmenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
+                SendMessage(hwnd, WM_NULL, 0, 0);
+                if (clicked_mode_idx == popup_exit)
+                {
+                    SendMessage(hwnd, WM_DESTROY, 0, 0);
+                }
+                if (clicked_mode_idx > 0 && clicked_mode_idx <= currentModes.size())
+                {
+                    dispInfo[disp_idx].selected_mode_idx = clicked_mode_idx - 1;
+                    ApplyCustomDisplay();
+                    ReloadModes(hwnd);
+                }
+                break;
+            }
+            case WM_LBUTTONUP:
+            {
+                if (IsWindowVisible(hwnd)) { minimizeToTray(hwnd); }
+                else { restoreFromTray(hwnd); }
+                break;
+            }
+        }
+        break;
+    }
+    case WM_NCRBUTTONDOWN:
+    {
+        // ignore right click of window frame
+        break;
+    }
+    case WM_SYSCOMMAND:
+        switch (LOWORD(wParam))
+        {
+        case SC_CLOSE:
+            minimizeToTray(hwnd);
+            return 0;
+        }
+        return DefWindowProc(hwnd, msg, wParam, lParam);
     case WM_DESTROY:
         quit = true;
         PostQuitMessage(0);
         break;
     case WM_HOTKEY:
         Revert();
+        ReloadModes(hwnd);
         break;
 
     case WM_COMMAND:
@@ -400,7 +579,7 @@ int APIENTRY WinMain(
         0,
         0,
         hInst,
-        LoadIcon(NULL, IDI_APPLICATION),
+        LoadIcon(hInst, MAKEINTRESOURCE(IDI_ICON1)),
         LoadCursor(NULL, IDC_ARROW),
         NULL,
         NULL,
@@ -419,7 +598,7 @@ int APIENTRY WinMain(
         lpszClassName,
         lpszWindowName,
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 300, 140,
+        CW_USEDEFAULT, CW_USEDEFAULT, 300, 210,
         NULL,
         NULL,
         hInst,
@@ -427,16 +606,26 @@ int APIENTRY WinMain(
     );
 
     LONG_PTR dwStyle = GetWindowLongPtr(hwnd, GWL_STYLE);
-    dwStyle &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    dwStyle &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
     SetWindowLongPtr(hwnd, GWL_STYLE, dwStyle);
 
+    // Initialize font
+    HDC hDC = GetDC(hwnd);
+    int nHeight = -MulDiv(11, GetDeviceCaps(hDC, LOGPIXELSY), 82);
+    HFONT hFont = CreateFont(nHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    ReleaseDC(hwnd, hDC);
 
     if (hwnd == NULL)
     {
         MessageBox(NULL, L"Window Creation Failed!", L"Error!", MB_ICONEXCLAMATION | MB_OK);
         return 0;
     }
-    ShowWindow(hwnd, cmdshow);
+
+    int width = GetSystemMetrics(SM_CXSCREEN);
+    int height = GetSystemMetrics(SM_CYSCREEN);
+
+    SetWindowPos(hwnd, HWND_TOP, width - 300, height - 300, 300, 210, SWP_NOZORDER);
 
     RegisterHotKey(hwnd, 1, MOD_ALT | MOD_SHIFT, 'R'); // use this combo to recover from a bad modeswitch
 
@@ -455,6 +644,7 @@ int APIENTRY WinMain(
         }
 
     }
+    SendMessage(hDisplayComboBox, WM_SETFONT, (LPARAM)hFont, TRUE);
     ResizeComboBox(hDisplayComboBox, sizeof(dispInfo));
     SendMessage(hDisplayComboBox, CB_SETCURSEL, 0, 0);
 
@@ -468,6 +658,7 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hChangeRefreshrateButton, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     HWND hdesiredResolutionTextBox = CreateWindowEx(
         WS_EX_CLIENTEDGE,
@@ -480,6 +671,7 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hdesiredResolutionTextBox, WM_SETFONT, (LPARAM)hFont, TRUE);
     SetWindowText(hdesiredResolutionTextBox, L"60.000");
 
     HWND hSaveRefreshrateButton = CreateWindow(
@@ -492,6 +684,7 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hSaveRefreshrateButton, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     HWND hDeleteRefreshrateButton = CreateWindow(
         L"BUTTON",
@@ -503,21 +696,23 @@ int APIENTRY WinMain(
         hInst,
         NULL
     );
+    SendMessage(hDeleteRefreshrateButton, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     HWND hModesComboBox = CreateWindowEx(0, L"COMBOBOX", L"Collapsed Combobox",
         CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_CHILD | WS_OVERLAPPED | WS_VISIBLE,
         0, 75, 285, 0, hwnd, (HMENU)saved_modes_combo, (HINSTANCE)GetWindowLong(hwnd, GWLP_HINSTANCE), NULL);
+    SendMessage(hModesComboBox, WM_SETFONT, (LPARAM)hFont, TRUE);
 
-
-    HWND hBaseModeText = CreateWindowW(
-        L"STATIC",                      
-        L"",                            
+    hTimingText = CreateWindowA(
+        "STATIC",                      
+        "test",
         WS_VISIBLE | WS_CHILD,        
-        0, 110, 300, 20,               
+        1, 100, 300, 140,               
         hwnd,                     
         (HMENU)base_mode_text,            
         hInst,                  
-        NULL);                     
+        NULL);
+    SendMessage(hTimingText, WM_SETFONT, (LPARAM)hFont, TRUE);
 
     ReloadModes(hwnd);
 
